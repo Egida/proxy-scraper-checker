@@ -117,13 +117,14 @@ class ProxyScraperChecker:
             proto (str): http/socks4/socks5.
         """
         try:
-            r = get(source.strip(), timeout=15)
+            with get(source.strip(), timeout=15) as r:
+                status_code = r.status_code
+                text = r.text
         except Exception as e:
             logger.error(f"{source}: {e}")
             return
-        status_code = r.status_code
         if status_code == 200:
-            for proxy in r.text.splitlines():
+            for proxy in text.splitlines():
                 proxy = (
                     proxy.replace(f"{proto}://", "")
                     .replace("https://", "")
@@ -142,14 +143,15 @@ class ProxyScraperChecker:
             proto (str): http/socks4/socks5.
         """
         try:
-            exit_node = get(
+            with get(
                 self.IP_SERVICE,
                 proxies={
                     "http": f"{proto}://{proxy}",
                     "https": f"{proto}://{proxy}",
                 },
                 timeout=self.TIMEOUT,
-            ).text.strip()
+            ) as r:
+                exit_node = r.text.strip()
         except Exception:
             return
         if self.is_ipv4(exit_node):
