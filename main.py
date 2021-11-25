@@ -177,17 +177,10 @@ class ProxyScraperChecker:
 
     def sort_proxies(self) -> None:
         """Delete invalid proxies and sort working ones."""
-        prox = [
-            (
-                proto,
-                [
-                    (proxy, exit_node)
-                    for proxy, exit_node in proxies.items()
-                    if exit_node
-                ],
-            )
+        prox = (
+            (proto, filter(lambda x: x[1] is not None, proxies.items()))
             for proto, proxies in self.proxies.items()
-        ]
+        )
         self.proxies = {
             proto: dict(sorted(proxies, key=self._get_sorting_key))
             for proto, proxies in prox
