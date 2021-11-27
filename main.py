@@ -2,16 +2,24 @@
 # -*- coding: utf-8 -*-
 from ipaddress import IPv4Address
 from os import mkdir
+from random import shuffle
 from shutil import rmtree
-from sys import stderr
 from threading import Thread
 from time import sleep
 from typing import Any, Dict, Iterable, Optional, Tuple
 
-from loguru import logger
 from maxminddb import open_database
 from maxminddb.reader import Reader
 from requests import get
+from rich.console import Console
+from rich.progress import (
+    BarColumn,
+    Progress,
+    TaskID,
+    TextColumn,
+    TimeRemainingColumn,
+)
+from rich.table import Table
 
 import config
 
@@ -19,12 +27,14 @@ import config
 class ProxyScraperChecker:
     def __init__(
         self,
+        *,
         timeout: float = 5,
         geolite2_city_mmdb: Optional[str] = None,
         ip_service: str = "https://checkip.amazonaws.com",
         http_sources: Optional[Iterable[str]] = None,
         socks4_sources: Optional[Iterable[str]] = None,
         socks5_sources: Optional[Iterable[str]] = None,
+        console: Optional[Console] = None,
     ) -> None:
         """Scrape and check proxies from sources and save them to files.
 
@@ -52,6 +62,8 @@ class ProxyScraperChecker:
         self.proxies: Dict[str, Dict[str, Optional[str]]] = {
             proto: {} for proto in self.SOURCES
         }
+        self.proxies_count = {proto: 0 for proto in self.SOURCES}
+        self.c = console or Console()
 
     @staticmethod
     def append_to_file(file_path: str, content: str) -> None:
@@ -89,7 +101,7 @@ class ProxyScraperChecker:
             city = city["names"]["en"]
         return f"::{country}::{region}::{city}"
 
-    def start_threads(self, threads: Iterable[Thread]) -> None:
+    def run_threads(self, threads: Iterable[Thread]) -> None:
         """Start and join threads."""
         for t in threads:
             try:
@@ -100,7 +112,9 @@ class ProxyScraperChecker:
         for t in threads:
             t.join()
 
-    def get_source(self, source: str, proto: str) -> None:
+    def fetch_source(
+        self, source: str, proto: str, progress: Progress, task: TaskID
+    ) -> None:
         """Get proxies from source.
 
         Args:
@@ -112,24 +126,27 @@ class ProxyScraperChecker:
                 status_code = r.status_code
                 text = r.text
         except Exception as e:
-            logger.error(f"{source}: {e}")
-            return
-        if status_code == 200:
-            for proxy in text.splitlines():
-                proxy = (
-                    proxy.replace(f"{proto}://", "")
-                    .replace("https://", "")
-                    .strip()
-                )
-                try:
-                    IPv4Address(proxy.split(":")[0])
-                except Exception:
-                    continue
-                self.proxies[proto][proxy] = None
+            self.c.print(f"{source}: {e}")
         else:
-            logger.error(f"{source} status code: {status_code}")
+            if status_code == 200:
+                for proxy in text.splitlines():
+                    proxy = (
+                        proxy.replace(f"{proto}://", "")
+                        .replace("https://", "")
+                        .strip()
+                    )
+                    try:
+                        IPv4Address(proxy.split(":")[0])
+                    except Exception:
+                        continue
+                    self.proxies[proto][proxy] = None
+            else:
+                self.c.print(f"{source} status code: {status_code}")
+        progress.update(task, advance=1, refresh=True)
 
-    def check_proxy(self, proxy: str, proto: str) -> None:
+    def check_proxy(
+        self, proxy: str, proto: str, progress: Progress, task: TaskID
+    ) -> None:
         """Check proxy validity.
 
         Args:
@@ -151,26 +168,53 @@ class ProxyScraperChecker:
             self.proxies[proto].pop(proxy)
         else:
             self.proxies[proto][proxy] = exit_node
+        progress.update(task, advance=1, refresh=True)
 
-    def get_all_sources(self) -> None:
+    def fetch_all_sources(self) -> None:
         """Get proxies from sources."""
-        logger.info("Getting sources")
-        threads = [
-            Thread(target=self.get_source, args=(source, proto), daemon=True)
-            for proto, sources in self.SOURCES.items()
-            for source in sources
-        ]
-        self.start_threads(threads)
+        with self._get_progress() as progress:
+            tasks = {
+                proto: progress.add_task(
+                    "[yellow]Scraper[/yellow] [red]::[/red]"
+                    + f" [green]{proto.upper()}[/green]",
+                    total=len(sources),
+                )
+                for proto, sources in self.SOURCES.items()
+            }
+            threads = [
+                Thread(
+                    target=self.fetch_source,
+                    args=(source, proto, progress, tasks[proto]),
+                    daemon=True,
+                )
+                for proto, sources in self.SOURCES.items()
+                for source in sources
+            ]
+            self.run_threads(threads)
+        for proto, proxies in self.proxies.items():
+            self.proxies_count[proto] = len(proxies)
 
     def check_all_proxies(self) -> None:
-        for proto, proxies in self.proxies.items():
-            logger.info(f"Checking {len(proxies)} {proto} proxies")
-        threads = [
-            Thread(target=self.check_proxy, args=(proxy, proto), daemon=True)
-            for proto, proxies in self.proxies.items()
-            for proxy in proxies
-        ]
-        self.start_threads(threads)
+        with self._get_progress() as progress:
+            tasks = {
+                proto: progress.add_task(
+                    "[yellow]Checker[/yellow] [red]::[/red]"
+                    + f" [green]{proto.upper()}[/green]",
+                    total=len(proxies),
+                )
+                for proto, proxies in self.proxies.items()
+            }
+            threads = [
+                Thread(
+                    target=self.check_proxy,
+                    args=(proxy, proto, progress, tasks[proto]),
+                    daemon=True,
+                )
+                for proto, proxies in self.proxies.items()
+                for proxy in proxies
+            ]
+            shuffle(threads)
+            self.run_threads(threads)
 
     def sort_proxies(self) -> None:
         self.proxies = {
@@ -221,28 +265,48 @@ class ProxyScraperChecker:
                             self.append_to_file(path_anonymous, line)
 
     def main(self) -> None:
-        self.get_all_sources()
+        self.fetch_all_sources()
         self.check_all_proxies()
+
+        table = Table()
+        table.add_column("Protocol", style="cyan")
+        table.add_column("Working", style="magenta")
+        table.add_column("Total", style="green")
+        for proto, proxies in self.proxies.items():
+            working = len(proxies)
+            total = self.proxies_count[proto]
+            percentage = working / total * 100
+            table.add_row(
+                proto.upper(), f"{working} ({percentage:.1f}%)", str(total)
+            )
+        self.c.print(table)
+
         self.sort_proxies()
         self.save_proxies()
-        logger.success("Result:")
-        for proto, proxies in self.proxies.items():
-            logger.success(f"{proto} - {len(proxies)}")
+
+        self.c.print(
+            "[green]Proxy folders have been created in the current directory."
+            + "\nThank you for using proxy-scraper-checker :)[/green]"
+        )
 
     @staticmethod
     def _get_sorting_key(x: Tuple[str, Any]) -> Tuple[int, ...]:
         octets = x[0].replace(":", ".").split(".")
         return tuple(map(int, octets))
 
+    def _get_progress(self) -> Progress:
+        return Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:3.0f}%"),
+            TextColumn("[blue][{task.completed}/{task.total}][/blue]"),
+            TimeRemainingColumn(),
+            console=self.c,
+            auto_refresh=False,
+        )
+
 
 def main() -> None:
-    logger.remove()
-    logger.add(
-        stderr,
-        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green>"
-        + " | <level>{message}</level>",
-        colorize=True,
-    )
     ProxyScraperChecker(
         timeout=config.TIMEOUT,
         geolite2_city_mmdb="GeoLite2-City.mmdb"
@@ -253,7 +317,6 @@ def main() -> None:
         socks4_sources=config.SOCKS4_SOURCES if config.SOCKS4 else None,
         socks5_sources=config.SOCKS5_SOURCES if config.SOCKS5 else None,
     ).main()
-    logger.success("Thank you for using proxy-scraper-checker :)")
 
 
 if __name__ == "__main__":

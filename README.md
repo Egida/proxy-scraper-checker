@@ -1,10 +1,11 @@
-# proxy-scraper-checker
+<h1 align="center">proxy-scraper-checker</h1>
+<p align="center"><img src="screenshot.png" alt="Screenshot" /></p>
 
-Get and check free anonymous HTTP, SOCKS4, SOCKS5 proxies from different sources. Supports getting exit-node's geolocation for each proxy.
+Check free anonymous HTTP, SOCKS4, SOCKS5 proxies from different sources. Supports determining exit-node's geolocation for each proxy.
 
 ## Usage
 
-- Make sure `Python` version is 3.6 or higher.
+- Make sure `Python` version is 3.6.2 or higher.
 - Install dependencies from `requirements.txt`.
 - Edit `config.py` according to your preference.
 - Run `main.py`.
