@@ -54,15 +54,6 @@ class ProxyScraperChecker:
         }
 
     @staticmethod
-    def is_ipv4(ip: str) -> bool:
-        """Return True if ip is IPv4."""
-        try:
-            IPv4Address(ip)
-        except Exception:
-            return False
-        return True
-
-    @staticmethod
     def append_to_file(file_path: str, content: str) -> None:
         with open(file_path, "a", encoding="utf-8") as f:
             f.write(f"{content}\n")
@@ -130,8 +121,11 @@ class ProxyScraperChecker:
                     .replace("https://", "")
                     .strip()
                 )
-                if self.is_ipv4(proxy.split(":")[0]):
-                    self.proxies[proto][proxy] = None
+                try:
+                    IPv4Address(proxy.split(":")[0])
+                except Exception:
+                    continue
+                self.proxies[proto][proxy] = None
         else:
             logger.error(f"{source} status code: {status_code}")
 
@@ -152,9 +146,10 @@ class ProxyScraperChecker:
                 timeout=self.TIMEOUT,
             ) as r:
                 exit_node = r.text.strip()
+            IPv4Address(exit_node)
         except Exception:
-            return
-        if self.is_ipv4(exit_node):
+            self.proxies[proto].pop(proxy)
+        else:
             self.proxies[proto][proxy] = exit_node
 
     def get_all_sources(self) -> None:
@@ -178,19 +173,13 @@ class ProxyScraperChecker:
         self.start_threads(threads)
 
     def sort_proxies(self) -> None:
-        """Delete invalid proxies and sort working ones."""
-        prox = (
-            (proto, filter(lambda x: x[1] is not None, proxies.items()))
-            for proto, proxies in self.proxies.items()
-        )
         self.proxies = {
-            proto: dict(sorted(proxies, key=self._get_sorting_key))
-            for proto, proxies in prox
+            proto: dict(sorted(proxies.items(), key=self._get_sorting_key))
+            for proto, proxies in self.proxies.items()
         }
 
     def save_proxies(self) -> None:
         """Delete old proxies and save new ones."""
-        self.sort_proxies()
         dirs_to_delete = (
             "proxies",
             "proxies_anonymous",
@@ -234,6 +223,7 @@ class ProxyScraperChecker:
     def main(self) -> None:
         self.get_all_sources()
         self.check_all_proxies()
+        self.sort_proxies()
         self.save_proxies()
         logger.success("Result:")
         for proto, proxies in self.proxies.items():
