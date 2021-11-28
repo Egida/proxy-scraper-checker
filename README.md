@@ -3,6 +3,8 @@
 
 Check free anonymous HTTP, SOCKS4, SOCKS5 proxies from different sources. Supports determining exit-node's geolocation for each proxy.
 
+**For a version that uses Python's built-in `logging` instead of [rich](https://github.com/willmcgugan/rich), see the [simple-output](https://github.com/monosans/proxy-scraper-checker/tree/simple-output) branch.**
+
 ## Usage
 
 - Make sure `Python` version is 3.7 or higher.
