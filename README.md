@@ -5,8 +5,8 @@ Check free anonymous HTTP, SOCKS4, SOCKS5 proxies from different sources. Suppor
 
 ## Usage
 
-- Make sure `Python` version is 3.6.2 or higher.
-- Install dependencies from `requirements.txt`.
+- Make sure `Python` version is 3.7 or higher.
+- Install dependencies from `requirements.txt` (`pip install -r requirements.txt`).
 - Edit `config.py` according to your preference.
 - Run `main.py`.
 

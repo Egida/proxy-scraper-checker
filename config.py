@@ -1,5 +1,21 @@
 # -*- coding: utf-8 -*-
 
+# How many seconds to wait for the proxy to make a connection.
+# The higher this number, the longer the check will take
+# and the more proxies you will receive.
+TIMEOUT = 5
+
+# Maximum concurrent connections.
+# Don't set higher than 950, please.
+MAX_CONNECTIONS = 950
+
+# Add geolocation info for each proxy (True or False).
+# Output format is ip:port::Country::Region::City
+GEOLOCATION = True
+
+# Service for checking the IP address.
+IP_SERVICE = "https://checkip.amazonaws.com"
+
 # PROTOCOL - whether to enable getting certain protocol proxies (True or False).
 # PROTOCOL_SOURCES - proxy lists URLs.
 HTTP = True
@@ -50,14 +66,3 @@ SOCKS5_SOURCES = {
     "https://www.proxy-list.download/api/v1/get?type=socks5",
     "https://www.proxyscan.io/download?type=socks5",
 }
-
-# Add geolocation info for each proxy (True or False).
-# Output format is ip:port::Country::Region::City
-GEOLOCATION = True
-
-# Service for checking the IP address.
-IP_SERVICE = "https://checkip.amazonaws.com"
-
-# How many seconds to wait for the proxy to make a connection.
-# Lower value results in getting less proxies but they will be faster.
-TIMEOUT = 5

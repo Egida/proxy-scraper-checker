@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+import asyncio
 from ipaddress import IPv4Address
 from os import mkdir
 from random import shuffle
 from shutil import rmtree
-from threading import Thread
-from time import sleep
 from typing import Any, Dict, Iterable, Optional, Tuple
 
+from aiohttp import ClientSession
+from aiohttp_socks import ProxyConnector
 from maxminddb import open_database
 from maxminddb.reader import Reader
-from requests import get
 from rich.console import Console
 from rich.progress import (
     BarColumn,
@@ -28,6 +28,7 @@ class ProxyScraperChecker:
     def __init__(
         self,
         *,
+        max_connections: int = 950,
         timeout: float = 5,
         geolite2_city_mmdb: Optional[str] = None,
         ip_service: str = "https://checkip.amazonaws.com",
@@ -39,12 +40,14 @@ class ProxyScraperChecker:
         """Scrape and check proxies from sources and save them to files.
 
         Args:
+            max_connections (int): Maximum concurrent connections.
+            timeout (float): How many seconds to wait for the connection.
             geolite2_city_mmdb (str): Path to the GeoLite2-City.mmdb if you
                 want to add location info for each proxy.
             ip_service (str): Service for getting your IP address and checking
                 if proxies are valid.
-            timeout (float): How many seconds to wait for the connection.
         """
+        self.sem = asyncio.Semaphore(max_connections)
         self.IP_SERVICE = ip_service.strip()
         self.TIMEOUT = timeout
         self.MMDB = geolite2_city_mmdb
@@ -101,19 +104,13 @@ class ProxyScraperChecker:
             city = city["names"]["en"]
         return f"::{country}::{region}::{city}"
 
-    def run_threads(self, threads: Iterable[Thread]) -> None:
-        """Start and join threads."""
-        for t in threads:
-            try:
-                t.start()
-            except RuntimeError:
-                sleep(self.TIMEOUT)
-                t.start()
-        for t in threads:
-            t.join()
-
-    def fetch_source(
-        self, source: str, proto: str, progress: Progress, task: TaskID
+    async def fetch_source(
+        self,
+        session: ClientSession,
+        source: str,
+        proto: str,
+        progress: Progress,
+        task: TaskID,
     ) -> None:
         """Get proxies from source.
 
@@ -122,13 +119,13 @@ class ProxyScraperChecker:
             proto (str): http/socks4/socks5.
         """
         try:
-            with get(source.strip(), timeout=15) as r:
-                status_code = r.status_code
-                text = r.text
+            async with session.get(source.strip(), timeout=15) as r:
+                status = r.status
+                text = await r.text(encoding="utf-8")
         except Exception as e:
             self.c.print(f"{source}: {e}")
         else:
-            if status_code == 200:
+            if status == 200:
                 for proxy in text.splitlines():
                     proxy = (
                         proxy.replace(f"{proto}://", "")
@@ -141,10 +138,10 @@ class ProxyScraperChecker:
                         continue
                     self.proxies[proto][proxy] = None
             else:
-                self.c.print(f"{source} status code: {status_code}")
-        progress.update(task, advance=1, refresh=True)
+                self.c.print(f"{source} status code: {status}")
+        progress.update(task, advance=1)
 
-    def check_proxy(
+    async def check_proxy(
         self, proxy: str, proto: str, progress: Progress, task: TaskID
     ) -> None:
         """Check proxy validity.
@@ -154,23 +151,30 @@ class ProxyScraperChecker:
             proto (str): http/socks4/socks5.
         """
         try:
-            with get(
-                self.IP_SERVICE,
-                proxies={
-                    "http": f"{proto}://{proxy}",
-                    "https": f"{proto}://{proxy}",
-                },
-                timeout=self.TIMEOUT,
-            ) as r:
-                exit_node = r.text.strip()
+            async with self.sem:
+                async with ClientSession(
+                    connector=ProxyConnector.from_url(f"{proto}://{proxy}")
+                ) as session:
+                    async with session.get(
+                        self.IP_SERVICE, timeout=self.TIMEOUT
+                    ) as r:
+                        exit_node = await r.text(encoding="utf-8")
+            exit_node = exit_node.strip()
             IPv4Address(exit_node)
-        except Exception:
+        except Exception as e:
+
+            # Too many open files
+            if isinstance(e, OSError) and e.errno == 24:
+                self.c.print(
+                    "[red]Please, set MAX_CONNECTIONS to lower number.[/red]"
+                )
+
             self.proxies[proto].pop(proxy)
         else:
             self.proxies[proto][proxy] = exit_node
-        progress.update(task, advance=1, refresh=True)
+        progress.update(task, advance=1)
 
-    def fetch_all_sources(self) -> None:
+    async def fetch_all_sources(self) -> None:
         """Get proxies from sources."""
         with self._get_progress() as progress:
             tasks = {
@@ -181,20 +185,19 @@ class ProxyScraperChecker:
                 )
                 for proto, sources in self.SOURCES.items()
             }
-            threads = [
-                Thread(
-                    target=self.fetch_source,
-                    args=(source, proto, progress, tasks[proto]),
-                    daemon=True,
+            async with ClientSession() as session:
+                coroutines = (
+                    self.fetch_source(
+                        session, source, proto, progress, tasks[proto]
+                    )
+                    for proto, sources in self.SOURCES.items()
+                    for source in sources
                 )
-                for proto, sources in self.SOURCES.items()
-                for source in sources
-            ]
-            self.run_threads(threads)
+                await asyncio.gather(*coroutines)
         for proto, proxies in self.proxies.items():
             self.proxies_count[proto] = len(proxies)
 
-    def check_all_proxies(self) -> None:
+    async def check_all_proxies(self) -> None:
         with self._get_progress() as progress:
             tasks = {
                 proto: progress.add_task(
@@ -204,17 +207,13 @@ class ProxyScraperChecker:
                 )
                 for proto, proxies in self.proxies.items()
             }
-            threads = [
-                Thread(
-                    target=self.check_proxy,
-                    args=(proxy, proto, progress, tasks[proto]),
-                    daemon=True,
-                )
+            coroutines = [
+                self.check_proxy(proxy, proto, progress, tasks[proto])
                 for proto, proxies in self.proxies.items()
                 for proxy in proxies
             ]
-            shuffle(threads)
-            self.run_threads(threads)
+            shuffle(coroutines)
+            await asyncio.gather(*coroutines)
 
     def sort_proxies(self) -> None:
         self.proxies = {
@@ -264,9 +263,9 @@ class ProxyScraperChecker:
                         if exit_node != proxy.split(":")[0]:
                             self.append_to_file(path_anonymous, line)
 
-    def main(self) -> None:
-        self.fetch_all_sources()
-        self.check_all_proxies()
+    async def main(self) -> None:
+        await self.fetch_all_sources()
+        await self.check_all_proxies()
 
         table = Table()
         table.add_column("Protocol", style="cyan")
@@ -302,12 +301,12 @@ class ProxyScraperChecker:
             TextColumn("[blue][{task.completed}/{task.total}][/blue]"),
             TimeRemainingColumn(),
             console=self.c,
-            auto_refresh=False,
         )
 
 
-def main() -> None:
-    ProxyScraperChecker(
+async def main() -> None:
+    await ProxyScraperChecker(
+        max_connections=config.MAX_CONNECTIONS,
         timeout=config.TIMEOUT,
         geolite2_city_mmdb="GeoLite2-City.mmdb"
         if config.GEOLOCATION
@@ -320,4 +319,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
