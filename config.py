@@ -16,7 +16,7 @@ GEOLOCATION = True
 # Service for checking the IP address.
 IP_SERVICE = "https://checkip.amazonaws.com"
 
-# PROTOCOL - whether to enable getting certain protocol proxies (True or False).
+# PROTOCOL - whether to enable checking certain protocol proxies (True or False).
 # PROTOCOL_SOURCES - proxy lists URLs.
 HTTP = True
 HTTP_SOURCES = {
@@ -40,8 +40,6 @@ HTTP_SOURCES = {
     "https://www.proxy-list.download/api/v1/get?type=https",
     "https://www.proxyscan.io/download?type=http",
 }
-
-# SOCKS proxies need PySocks library installed.
 SOCKS4 = True
 SOCKS4_SOURCES = {
     "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks4",
